@@ -1,0 +1,12 @@
+{
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.0.1",
+    "drivelist": "^11.0.0",
+    "fs-extra": "^10.1.0",
+    "get-audio-duration": "^3.1.0",
+    "leven": "^4.0.0",
+    "ora": "^6.1.2",
+    "prompts": "^2.4.2"
+  }
+}
