@@ -1,6 +1,7 @@
 import { readFile, readdir } from 'fs/promises';
 import * as path from 'path';
 
+// Convert total duration in seconds to minutes:seconds format.
 const secondsToTime = ( duration ) => {
     const minutes = Math.floor( duration / 60 )
     const seconds = Math.floor( duration % 60 ).toString().padStart( 2, '0' );

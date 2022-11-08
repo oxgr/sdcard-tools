@@ -9,7 +9,9 @@ import drivelist from 'drivelist';
 import chalk from 'chalk';
 import prompts from 'prompts';
 import ora from 'ora';
-import { sleep } from './helpers.js'
+import notifier from 'node-notifier'
+import { secondsToTime, sleep } from './helpers.js'
+import { log } from 'console';
 
 const Model = await setup();
 await main( Model );
@@ -56,11 +58,16 @@ async function setup() {
     await fse.ensureFile( PROGRESS_PATH );
     await fse.ensureFile( SONGCODES_PATH );
 
-    if ( COMMAND == 'init' ) await init( {
-        CONFIG_PATH: CONFIG_PATH,
-        PROGRESS_PATH: PROGRESS_PATH,
-        SONGCODES_PATH: SONGCODES_PATH,
-    } );
+    if ( COMMAND == 'init' ) {
+        await init( {
+            CONFIG_PATH: CONFIG_PATH,
+            PROGRESS_PATH: PROGRESS_PATH,
+            SONGCODES_PATH: SONGCODES_PATH,
+        } );
+
+        console.log( chalk.bold.blue( 'Init done.' ) );
+        process.exit();
+    }
 
     const { ASSIGNED_PATH, EXTRA_PATH } = await getConfig( CONFIG_PATH );
 
@@ -104,49 +111,8 @@ async function main( Model ) {
 
     if ( COMMAND == 'monitor' ) {
 
-        let monitor = true;
-
-
-        await ( async () => {
-            return new Promise( resolve => {
-                const spinner = ora( 'Monitoring for new drives...' ).start();
-
-                let prevCount = 0,
-                    oldDrives = []
-
-                setInterval( async () => {
-
-                    const drives = await getDrives();
-
-                    if ( drives.length > prevCount ) {
-                        const newDrives = drives.filter( drive => !oldDrives.some( oldDrive => oldDrive.device == drive.device ) );
-                        for ( const newDrive of newDrives ) {
-                            await mountDrive( newDrive );
-                            spinner.clear();
-                            if ( newDrive.mountpoints.length >= 1 )
-                                ora().succeed( `${chalk.bold( newDrive.device )}: ${chalk.green( newDrive.mountpoints[ 0 ].label )}` )
-                            else
-                                ora().warn( `${chalk.bold( newDrive.device )}: ${chalk.yellow( '<unknown>' )}` )
-                        }
-                    }
-
-                    if ( drives.length < prevCount ) {
-                        const removedDrives = oldDrives.filter( oldDrive => !drives.some( drive => drive.device == oldDrive.device ) );
-                        for ( const removedDrive of removedDrives ) {
-                            spinner.clear();
-                            ora().fail( `${chalk.bold( removedDrive.device )}: ${chalk.red( removedDrive.mountpoints[ 0 ].label )}` )
-                        }
-                    }
-
-                    oldDrives = drives;
-                    prevCount = drives.length
-
-                }, 1000 )
-
-            } )
-        } )()
-
-        return;
+        await monitorDrives();
+        process.exit();
 
     }
 
@@ -178,44 +144,90 @@ async function main( Model ) {
 
     // Pipeline for each drive. Await each command so they happen synchronously.
 
+    const startTime = performance.now();
+
     const driveSongPairs = drives.map( drive => ( {
         drive: drive,
         song: getNewSong( songs, progress )
     } ) )
 
+    const emptyProcessSpinner = ora( 'Emptying...' ).start();
     await parallelProcess( drives, emptyDrive );
+    emptyProcessSpinner.succeed( 'Emptied' );
 
-    let completionCount = 1;
-    const totalTracks = drives.length + EXTRAS.length;
-    // const driveProcessSpinner = ora( 'Copying contents to drives...' ).start();
-    console.log( 'Copying...' );
+
+    //
+
+    let driveCount = 0;
+    let trackCount = 0;
+    const totalDrives = drives.length;
+    const totalTracks = EXTRAS.length + 1;
+    const copyMessage = 'Copying contents to drives... ';
+    const copyProcessSpinner = ora( copyMessage + `[${chalk.yellow( driveCount )}/${totalDrives}]` )
+    copyProcessSpinner.start();
+
+    // "Parallel processing" or moreso async i/o commands are at least 2x slower than just awaiting one copy command at a time.
+    // At most, we can use fs-extra.copy() to copy whole directories.
+    // Leaving code below for reference.
+
+    // await parallelProcess( driveSongPairs, async ( pair ) => {
+    //     const { drive, song } = pair;
+    //     return copyContents( drive, song, EXTRAS )
+
+    //     // await renameDrive( drive, song.code );
+
+    //     // const iOfLength = `${completionCount++}/${drives.length}`;
+    //     // const spinnerText = `[${chalk.bold( iOfLength )}] ${chalk.green( song.code )}\b`;
+    //     // const spinner = ora( spinnerText );
+
+    //     // driveProcessSpinner.clear();
+    //     // spinner.succeed();
+    // } )
+
+    for ( const pair of driveSongPairs ) {
+        const { drive, song } = pair;
+        await copyContents( drive, song, EXTRAS );
+        copyProcessSpinner.text = copyMessage + `[${chalk.yellow( ++driveCount )}/${totalDrives}]`;
+    }
+
+    copyProcessSpinner.succeed( 'Copied ' + `${chalk.green( `[${driveCount}/${totalDrives}]` )}` );
+
+    //
+
+    const renameProcessSpinner = ora( 'Renaming...' ).start();
 
     await parallelProcess( driveSongPairs, async ( pair ) => {
         const { drive, song } = pair;
+        return renameDrive( drive, song.code )
+    } );
 
-        return copyContents( drive, song, EXTRAS )
-        await renameDrive( drive, song.code );
+    renameProcessSpinner.succeed( 'Renamed' );
 
-        const iOfLength = `${completionCount++}/${drives.length}`;
-        const spinnerText = `[${chalk.bold( iOfLength )}] ${chalk.green( song.code )}\b`;
-        const spinner = ora( spinnerText );
-
-        driveProcessSpinner.clear();
-        spinner.succeed();
-    } )
-
-    console.log( 'Renaming...' );
-    await parallelProcess( driveSongPairs, async ( pair ) => { const { drive, song } = pair; return renameDrive( drive, song.code ) } );
-
-    console.log();
-    // driveProcessSpinner.succeed( 'Contents copied and drives renamed.' );
+    //
 
     await unmountAll( drives )
 
     await updateProgress( PROGRESS_PATH, progress )
 
+    const totalTime = secondsToTime( ( ( performance.now() - startTime ) * 0.001 ).toFixed( 2 ) );
+    console.log( 'Total time:', totalTime );
+
     // // Wait for a bit to ensure previous commands close.
     // await sleep();
+
+    // const growl = new notifier.Growl();
+
+    notifier.notify(
+        // growl.notify(
+        {
+            title: 'SD Card Uploader',
+            message: 'Batch finished uploading!',
+            sound: true, // Only Notification Center or Windows Toasters
+            wait: true, // Wait with callback, until user action is taken against notification, does not apply to Windows Toasters as they always wait or notify-send as it does not support the wait option
+            // timeout: 1,
+            // sticky: true
+        }
+    );
 
     return false;
 
@@ -278,9 +290,6 @@ async function init( paths ) {
 
     const availableSongs = await parseSongDirectory( config.ASSIGNED_PATH, { includePath: true } )
     await fse.outputFile( SONGCODES_PATH, JSON.stringify( availableSongs, null, 2 ) );
-
-    console.log( chalk.bold.blue( 'Init done.' ) );
-    process.exit();
 
 }
 
@@ -478,13 +487,37 @@ async function copyContents( drive, song, extras ) {
     // ] );
     const drivePath = drive.mountpoints[ 0 ].path;
 
-    // console.log( chalk.bold( 'Copying:' ), song.path );
-    const songCopy = fse.copy( song.path, path.join( drivePath, path.basename( song.path ) ) );
-    // console.log( chalk.bold( 'Copying:' ), extraPath );
-    const extrasCopy = Promise.all ( extras.map( extra => fse.copy( extra.path, path.join( drivePath, path.basename( extra.path ) ) ) ) );
-    // const extrasCopy = fse.copy( extraPath, drivePath );
+    // const cpPromises = Array( extras.length + 1 ).map( ( e, i ) => {
 
-    return Promise.all( [ songCopy, extrasCopy ] );
+    //     let src;
+
+    //     if ( i == 0 ) {
+    //         src = song.path
+    //     } else {
+    //         src = extras[ i - 1 ].path
+    //     }
+
+    //     const dest = path.join( drivePath, path.basename( src ) )
+    //     const cp = spawn( 'sudo', [ '-S', '-k', 'cp', src, dest ] )
+    //     return processSpawnInstance( cp, { silent: false } );
+    // } )
+
+
+    const songCopy = await fse.copy( song.path, path.join( drivePath, path.basename( song.path ) ) );
+    // const extrasCopy = await Promise.all( 
+    //     extras.map( extra => fse.copy( extra.path, path.join( drivePath, path.basename( extra.path ) ) ) )
+    // );
+    for ( const extra of extras ) {
+        await fse.copy( extra.path, path.join( drivePath, path.basename( extra.path ) ) );
+    }
+
+    // const cpPromises = [
+    //     songCopy,
+    //     ...extrasCopy
+    // ]
+
+    // return Promise.all( cpPromises );
+    return;
 
 }
 
@@ -520,21 +553,79 @@ async function unmountAll( drives ) {
     return false;
 }
 
+async function monitorDrives() {
+
+    return new Promise( async resolve => {
+
+        const spinner = ora( 'Monitoring for new drives...' ).start();
+
+        let prevCount = 0,
+            oldDrives = [],
+            drives = await getDrives();
+
+        setInterval( async () => {
+
+            drives = ( await getDrives() ).map( drive => ( { device: drive.device, label: drive.mountpoints.length > 0 ? drive.mountpoints[ 0 ].label : undefined } ) );
+
+            // // Unmounted drives
+            // const unmountedDrives = drives.filter( drive => drive.mountpoints.length == 0 )
+            // if ( unmountedDrives.length > 0 ) {
+            //     for ( const unmountedDrive of unmountedDrives ) {
+            //         ora().warn( `${chalk.bold( unmountedDrive.device )}: ${chalk.yellow('Unmounted')}` )
+            //     }
+            // }
+
+            // New drives
+            if ( drives.length > prevCount ) {
+                const newDrives = drives.filter( drive => !oldDrives.some( oldDrive => oldDrive.device == drive.device ) );
+                for ( const newDrive of newDrives ) {
+                    await mountDrive( newDrive );
+                    spinner.clear();
+                    if ( newDrive.label )
+                        ora().succeed( `${chalk.bold( newDrive.device )}: ${chalk.green( newDrive.label )}` )
+                    else
+                        ora().warn( `${chalk.bold( newDrive.device )}: ${chalk.yellow( '<unknown>' )}` )
+                }
+                oldDrives = [ ...drives ];
+                prevCount = drives.length
+            }
+
+            // Removed drives
+            if ( drives.length < prevCount ) {
+                const removedDrives = oldDrives.filter( oldDrive => !drives.some( drive => drive.device == oldDrive.device ) );
+                for ( const removedDrive of removedDrives ) {
+                    spinner.clear();
+                    if ( removedDrive.label )
+                        ora().fail( `${chalk.bold( removedDrive.device )}: ${chalk.red( removedDrive.label )}` )
+                    else
+                        ora().fail( `${chalk.bold( removedDrive.device )}: ${chalk.red( '<unknown>' )}` )
+
+                }
+                oldDrives = [ ...drives ];
+                prevCount = drives.length
+            }
+
+            
+
+        }, 1000 )
+
+    } )
+}
+
 async function updateProgress( PROGRESS_PATH, progress ) {
 
     return fs.writeFile( PROGRESS_PATH, JSON.stringify( progress, null, 2 ) )
 
 }
 
-// NodeJS `spawn` creates a shell that runs the command asynchronously from this script.
+// NodeJS `spawn` creates a shell that runs the command asynchronously from the main thread.
 // This is simple processing to print output to console and return a Promise so the command's timeline can be handled here.
 function processSpawnInstance( spawnInstance, options = { silent: true } ) {
 
     const { silent } = options;
 
     spawnInstance.stdin.write( Buffer.from( Model.PASSWORD ) );
-    if ( !silent ) 
-        spawnInstance.stdout.on( 'data', ( data ) => console.log( '\r' + data.toString().trim() ) )
+    if ( !silent ) spawnInstance.stdout.on( 'data', ( data ) => console.log( '\r' + data.toString().trim() ) )
     spawnInstance.stderr.on( 'data', ( data ) => {
         const str = data.toString();
         // Silence password prompt since we got it from our own prompt in getPermissions();

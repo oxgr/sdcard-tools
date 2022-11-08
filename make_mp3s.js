@@ -1,9 +1,9 @@
 import * as fs from 'fs/promises';
 import * as fse from 'fs-extra';
 import * as path from 'path'
-import { getAudioDurationInSeconds } from 'get-audio-duration';
+import getMp3Duration from 'get-mp3-duration';
 import { float32ToInt16, sleep, secondsToTime } from './helpers.js';
-import { createSpinner } from 'nanospinner';
+import ora from 'ora';
 import { spawn } from 'child_process';
 import chalk from 'chalk';
 
@@ -21,14 +21,16 @@ const sourceFilepaths = ( await fs.readdir( dirPath ) ).map( name => path.join( 
 //
 
 // Find longest file
-const longestFileSpinner = createSpinner( 'Finding longest file...' ).start();
+const longestFileSpinner = ora( 'Finding longest file...' ).start();
 const longestFile = await findLongestFile( sourceFilepaths );
-longestFileSpinner.success();
+longestFileSpinner.succeed();
 console.log( `
 Longest file:
     name: ${chalk.green(longestFile.name)}
     duration: ${chalk.yellow( secondsToTime(longestFile.duration) )}   
 `);
+
+process.exit()
 
 //
 
@@ -43,9 +45,9 @@ const tmpPath = path.resolve( path.join(
     ) )
 fse.ensureDir( outputPath )
 
-const copySpinner = createSpinner( 'Copying songs to temp...' ).start();
+const copySpinner = ora( 'Copying songs to temp...' ).start();
 await fse.copy( dirPath, outputPath );
-copySpinner.success();
+copySpinner.succeed();
 
 const outputFilepaths = sourceFilepaths.map( filepath => path.join( outputPath, path.basename( filepath ) ) );
 
@@ -58,12 +60,12 @@ const outputFilepaths = sourceFilepaths.map( filepath => path.join( outputPath, 
 //
 
 // Loop wav file buffers
-const createLoopsSpinner = createSpinner( 'Creating looped songs...' ).start();
+const createLoopsSpinner = ora( 'Creating looped songs...' ).start();
 
 ( async ( filepaths ) => {
     const promises = [];
     for ( const filepath of filepaths ) {
-        if ( dot( path.basename( filepath ) ) ) continue;
+        if ( isDotFile( path.basename( filepath ) ) ) continue;
         // promises.push( 
             // ffmpegLoop( filepath, tmpPath, longestFile.duration.toString() )
         // )
@@ -73,14 +75,14 @@ const createLoopsSpinner = createSpinner( 'Creating looped songs...' ).start();
     // await Promise.all( promises )
 })( outputFilepaths )
 
-createLoopsSpinner.success();
+createLoopsSpinner.succeed();
 
 //
 
 // Copy tmp
-// const moveSpinner = createSpinner( 'Moving to output...' ).start();
+// const moveSpinner = ora( 'Moving to output...' ).start();
 // await fse.copy( tmpPath, outputPath );
-// moveSpinner.success();
+// moveSpinner.succeed();
 
 // if ( await fse.pathExists( tmpPath ) ) 
 // await fse.remove( tmpPath )
@@ -120,9 +122,44 @@ async function findLongestFile( filepaths ) {
         }
     }
 
-    longestFile.duration = await getAudioDurationInSeconds( longestFile.path )
+    // longestFile.duration = await getAudioDurationInSeconds( longestFile.path )
+    longestFile.duration = getMp3Duration( ( await fs.readFile( longestFile.path ) ) ) * 0.001;
 
     return longestFile;
+}
+
+
+async function ffmpegRemoveSilence( filepath, tmpPath ) {
+
+    const tmpOutputPath = path.join( tmpPath, path.basename( filepath ) )
+    const ffmpeg = spawn( 'ffmpeg', [
+        // '-loglevel', '+info',
+        // '-nostats',
+        // '-loglevel', '0',
+        '-stream_loop', '-1',
+        '-t', duration,
+        '-i', filepath,
+        // '-af', 'highpass=f=200,silenceremove=1:0:-50dB',
+        '-y',
+        // '-c:a', 'libmp3lame',
+        '-c', 'copy',
+        // '-af', 'silenceremove=stop_periods=-1:stop_duration=0.5:stop_threshold=-50dB', //https://stackoverflow.com/questions/65362706/ffmpeg-remove-all-silent-parts-from-audio-file
+        '-t', duration,
+        tmpOutputPath,
+    ] )
+
+    // ffmpeg.stdout.on( 'data', data => console.log( data.toString() ) )
+    ffmpeg.stderr.on( 'data', data => console.log( data.toString() ) )
+
+    // Promise resolves when ffmpeg command finishes.
+    return new Promise( ( resolve ) => { 
+        ffmpeg.on( 'exit', () => { 
+            fse.move( tmpOutputPath, filepath, { overwrite: true } )
+            resolve
+        } )
+    } ) ;
+
+
 }
 
 async function ffmpegLoop( filepath, tmpPath, duration ) {
@@ -149,7 +186,7 @@ async function ffmpegLoop( filepath, tmpPath, duration ) {
 
     // Promise resolves when ffmpeg command finishes.
     return new Promise( ( resolve ) => { 
-        ffmpeg.on( 'close', () => { 
+        ffmpeg.on( 'exit', () => { 
             fse.move( tmpOutputPath, filepath, { overwrite: true } )
             resolve
         } )
@@ -158,7 +195,7 @@ async function ffmpegLoop( filepath, tmpPath, duration ) {
 
 }
 
-// Used to detect if a filename is a dotfile 
-function dot( filename ) {
+// Used to detect if a filename is a isDotFilefile 
+function isDotFile( filename ) {
     return filename[0] == '.';
 }
