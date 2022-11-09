@@ -1,4 +1,4 @@
-#! /usr/bin/env node
+
 
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -10,7 +10,7 @@ import chalk from 'chalk';
 import prompts from 'prompts';
 import ora from 'ora';
 import notifier from 'node-notifier'
-import { secondsToTime, sleep } from './helpers.js'
+import { parseCSV, secondsToTime, sleep } from './helpers.js'
 import { log } from 'console';
 
 const Model = await setup();
@@ -52,28 +52,30 @@ async function setup() {
 
     const CONFIG_PATH = path.join( __dirname, 'data', 'config.json' )
     const PROGRESS_PATH = path.join( __dirname, 'data', 'progress.json' )
-    const SONGCODES_PATH = path.join( __dirname, 'data', 'songCodes.json' )
+    const SONGS_PATH = path.join( __dirname, 'data', 'songs.json' )
+    const CODES_PATH = path.join( __dirname, 'data', 'codes.json' )
 
     await fse.ensureFile( CONFIG_PATH );
     await fse.ensureFile( PROGRESS_PATH );
-    await fse.ensureFile( SONGCODES_PATH );
+    await fse.ensureFile( SONGS_PATH );
 
     if ( COMMAND == 'init' ) {
         await init( {
             CONFIG_PATH: CONFIG_PATH,
             PROGRESS_PATH: PROGRESS_PATH,
-            SONGCODES_PATH: SONGCODES_PATH,
+            SONGS_PATH: SONGS_PATH,
+            CODES_PATH: CODES_PATH,
         } );
 
         console.log( chalk.bold.blue( 'Init done.' ) );
         process.exit();
     }
 
-    const { ASSIGNED_PATH, EXTRA_PATH } = await getConfig( CONFIG_PATH );
+    const { ASSIGNED_PATH, EXTRAS_PATH } = await getConfig( CONFIG_PATH );
 
     const progress = await getProgress( PROGRESS_PATH );
-    const songs = await getSongs( SONGCODES_PATH )
-    const EXTRAS = await getExtras( EXTRA_PATH )
+    const extras = await getExtras( EXTRAS_PATH )
+    const songs = await getSongs( SONGS_PATH )
 
     const PASSWORD = await getPermissions();
 
@@ -82,7 +84,7 @@ async function setup() {
         ARGS: ARGS,
         COMMAND: COMMAND,
         PROGRESS_PATH,
-        EXTRAS: EXTRAS,
+        extras: extras,
         progress: progress,
         songs: songs,
     }
@@ -95,7 +97,7 @@ async function main( Model ) {
         ARGS,
         COMMAND,
         PROGRESS_PATH,
-        EXTRAS,
+        extras,
         progress,
         songs,
     } = Model
@@ -159,9 +161,7 @@ async function main( Model ) {
     //
 
     let driveCount = 0;
-    let trackCount = 0;
     const totalDrives = drives.length;
-    const totalTracks = EXTRAS.length + 1;
     const copyMessage = 'Copying contents to drives... ';
     const copyProcessSpinner = ora( copyMessage + `[${chalk.yellow( driveCount )}/${totalDrives}]` )
     copyProcessSpinner.start();
@@ -172,7 +172,7 @@ async function main( Model ) {
 
     // await parallelProcess( driveSongPairs, async ( pair ) => {
     //     const { drive, song } = pair;
-    //     return copyContents( drive, song, EXTRAS )
+    //     return copyContents( drive, song, extras )
 
     //     // await renameDrive( drive, song.code );
 
@@ -186,7 +186,7 @@ async function main( Model ) {
 
     for ( const pair of driveSongPairs ) {
         const { drive, song } = pair;
-        await copyContents( drive, song, EXTRAS );
+        await copyContents( drive, song, extras );
         copyProcessSpinner.text = copyMessage + `[${chalk.yellow( ++driveCount )}/${totalDrives}]`;
     }
 
@@ -247,9 +247,9 @@ function printGuide() {
 
 async function init( paths ) {
 
-    const { CONFIG_PATH, PROGRESS_PATH, SONGCODES_PATH } = paths;
+    const { CONFIG_PATH, PROGRESS_PATH, SONGS_PATH, CODES_PATH } = paths;
 
-    console.log( chalk.bold.blue( 'Start init' ) );
+    // console.log( chalk.bold.blue( 'Start init' ) );  
 
     const promptArray = [
         {
@@ -260,7 +260,7 @@ async function init( paths ) {
         },
         {
             type: 'text',
-            name: 'EXTRA_PATH',
+            name: 'EXTRAS_PATH',
             message: 'Path to the extra folder?',
             initial: path.join( '.', 'extra' )
         },
@@ -281,15 +281,18 @@ async function init( paths ) {
 
     let config = {
         ASSIGNED_PATH: path.resolve( response.ASSIGNED_PATH ),
-        EXTRA_PATH: path.resolve( response.EXTRA_PATH )
+        EXTRAS_PATH: path.resolve( response.EXTRAS_PATH )
     };
 
     await fs.writeFile( CONFIG_PATH, JSON.stringify( config, null, 2 ) );
 
     if ( !!response.eraseProgress ) await fs.writeFile( PROGRESS_PATH, '[]' );
 
+    const availableCodes = await parseCodes( CODES_PATH )
     const availableSongs = await parseSongDirectory( config.ASSIGNED_PATH, { includePath: true } )
-    await fse.outputFile( SONGCODES_PATH, JSON.stringify( availableSongs, null, 2 ) );
+
+    const songsJSON = combineSongCodes( availableSongs, availableCodes );
+    await fse.outputFile( SONGS_PATH, JSON.stringify( songsJSON, null, 2 ) );
 
 }
 
@@ -353,14 +356,14 @@ async function getProgress( PROGRESS_PATH ) {
 
 }
 
-async function getSongs( SONGCODES_PATH ) {
+async function getSongs( SONGS_PATH ) {
 
     let songsWithCodes;
 
     try {
-        songsWithCodes = JSON.parse( await fs.readFile( SONGCODES_PATH ) )
+        songsWithCodes = JSON.parse( await fs.readFile( SONGS_PATH ) )
     } catch ( err ) {
-        console.log( chalk.bold.red( 'Error: ' ) + 'Is the songCodes.json file valid?' );
+        console.log( chalk.bold.red( 'Error: ' ) + 'Is the songs.json file valid?' );
         process.exit();
     }
 
@@ -368,13 +371,13 @@ async function getSongs( SONGCODES_PATH ) {
 
 }
 
-async function getExtras( EXTRA_PATH ) {
+async function getExtras( EXTRAS_PATH ) {
 
-    const filenames = await fs.readdir( EXTRA_PATH )
+    const filenames = await fs.readdir( EXTRAS_PATH )
 
     return filenames.map( filename => ( {
         name: filename,
-        path: path.join( EXTRA_PATH, filename )
+        path: path.join( EXTRAS_PATH, filename )
     } ) )
 
 }
@@ -397,29 +400,36 @@ function getNewSong( songs, progress ) {
     return songs[ newSongIndex ];
 }
 
-async function parseSongDirectory( dirPath, options = { includePath: false } ) {
+async function parseCodes ( CODES_PATH ) {
+
+    const codes = JSON.parse( await fs.readFile( CODES_PATH ) );
+
+    return codes;
+    
+}
+
+async function parseSongDirectory( dirPath, options = { includePath: true } ) {
 
     const { includePath } = options;
 
     const filenames = await fs.readdir( dirPath );
+    
 
     const songs = filenames.map( ( filename, i ) => {
 
         if ( filename[ 0 ] == '.' ) return;
 
-        let processedName = filename.slice( 0, 3 ) == '00-' ?
+        const name = (
+            filename.slice( 0, 3 ) == '00-' ?
             filename.slice( 3 ) : // Remove '00-'
-            filename;
+            filename
+        )
+        // .match( /( [A-Z]).+$/m )[ 0 ]   // Match first capital letter with a space before it.
+        // .trim()                         // Remove the space
+        .replace( /\.[^/.]+$/, '' );    // Remove file extension
 
-        const code = processedName.split( ' ' )[ 0 ];   // Split at first space
-
-        const name = processedName
-            .match( /( [A-Z]).+$/m )[ 0 ]   // Match first capital letter witha space before it.
-            .trim()                         // Remove the space
-            .replace( /\.[^/.]+$/, '' );    // Remove file extension
 
         let result = {
-            code: code,
             name: name,
         }
 
@@ -439,6 +449,24 @@ async function parseSongDirectory( dirPath, options = { includePath: false } ) {
     } ).filter( e => e != null );
 
     return songs;
+
+}
+
+function combineSongCodes( songs, codes ) {
+
+    let extraCount = 0;
+
+    return songs.map( song => {
+
+        // const code = processedName.split( ' ' )[ 0 ];   // Split at first space
+        const code = codes.length > 0 ? codes.splice( 0, 1 )[ 0 ] : `XXX-${extraCount++}`;   // Use given array of codes
+
+        return {
+            ...song,
+            code: code
+        }
+
+    })
 
 }
 
@@ -586,8 +614,8 @@ async function monitorDrives() {
                     else
                         ora().warn( `${chalk.bold( newDrive.device )}: ${chalk.yellow( '<unknown>' )}` )
                 }
-                oldDrives = [ ...drives ];
-                prevCount = drives.length
+                // oldDrives = [ ...drives ];
+                // prevCount = drives.length
             }
 
             // Removed drives
@@ -601,13 +629,17 @@ async function monitorDrives() {
                         ora().fail( `${chalk.bold( removedDrive.device )}: ${chalk.red( '<unknown>' )}` )
 
                 }
+                // oldDrives = [ ...drives ];
+                // prevCount = drives.length
+            }
+
+            // Only update drives if there are none with no labels i.e. unmounted
+            if ( !drives.some( drive => !drive.label ) ) {
                 oldDrives = [ ...drives ];
                 prevCount = drives.length
             }
 
-            
-
-        }, 1000 )
+        }, 500 )
 
     } )
 }

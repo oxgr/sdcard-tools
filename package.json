@@ -2,6 +2,7 @@
   "type": "module",
   "dependencies": {
     "chalk": "^5.0.1",
+    "csv-parse": "^5.3.2",
     "drivelist": "^11.0.0",
     "fs-extra": "^10.1.0",
     "get-mp3-duration": "^1.0.0",

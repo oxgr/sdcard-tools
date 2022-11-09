@@ -7,8 +7,7 @@ import ora from 'ora';
 import { spawn } from 'child_process';
 import chalk from 'chalk';
 
-const ARGS = process.argv;
-ARGS.splice( 0, 2 );
+const ARGS = process.argv.slice( 2 );
 
 if ( ARGS.length < 1 ) {
     console.log( 'Pass a path to the directory with songs.' );
@@ -26,11 +25,11 @@ const longestFile = await findLongestFile( sourceFilepaths );
 longestFileSpinner.succeed();
 console.log( `
 Longest file:
-    name: ${chalk.green(longestFile.name)}
-    duration: ${chalk.yellow( secondsToTime(longestFile.duration) )}   
+    name: ${chalk.green( longestFile.name )}
+    duration: ${chalk.yellow( secondsToTime( longestFile.duration ) )}   
 `);
 
-process.exit()
+// process.exit()
 
 //
 
@@ -38,11 +37,11 @@ process.exit()
 const outputPath = path.resolve( path.join(
     path.dirname( dirPath ),
     path.basename( dirPath ) + '-looped'
-    ) )
+) )
 const tmpPath = path.resolve( path.join(
     path.dirname( dirPath ),
     'tmp'
-    ) )
+) )
 fse.ensureDir( outputPath )
 
 const copySpinner = ora( 'Copying songs to temp...' ).start();
@@ -67,13 +66,13 @@ const createLoopsSpinner = ora( 'Creating looped songs...' ).start();
     for ( const filepath of filepaths ) {
         if ( isDotFile( path.basename( filepath ) ) ) continue;
         // promises.push( 
-            // ffmpegLoop( filepath, tmpPath, longestFile.duration.toString() )
+        // ffmpegLoop( filepath, tmpPath, longestFile.duration.toString() )
         // )
         await ffmpegLoop( filepath, tmpPath, longestFile.duration.toString() )
         console.log( filepath + '\r' );
     }
     // await Promise.all( promises )
-})( outputFilepaths )
+} )( outputFilepaths )
 
 createLoopsSpinner.succeed();
 
@@ -152,12 +151,12 @@ async function ffmpegRemoveSilence( filepath, tmpPath ) {
     ffmpeg.stderr.on( 'data', data => console.log( data.toString() ) )
 
     // Promise resolves when ffmpeg command finishes.
-    return new Promise( ( resolve ) => { 
-        ffmpeg.on( 'exit', () => { 
+    return new Promise( ( resolve ) => {
+        ffmpeg.on( 'exit', () => {
             fse.move( tmpOutputPath, filepath, { overwrite: true } )
             resolve
         } )
-    } ) ;
+    } );
 
 
 }
@@ -185,17 +184,17 @@ async function ffmpegLoop( filepath, tmpPath, duration ) {
     ffmpeg.stderr.on( 'data', data => console.log( data.toString() ) )
 
     // Promise resolves when ffmpeg command finishes.
-    return new Promise( ( resolve ) => { 
-        ffmpeg.on( 'exit', () => { 
+    return new Promise( ( resolve ) => {
+        ffmpeg.on( 'exit', () => {
             fse.move( tmpOutputPath, filepath, { overwrite: true } )
             resolve
         } )
-    } ) ;
+    } );
 
 
 }
 
 // Used to detect if a filename is a isDotFilefile 
 function isDotFile( filename ) {
-    return filename[0] == '.';
+    return filename[ 0 ] == '.';
 }
